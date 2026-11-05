@@ -1,0 +1,115 @@
+name: Build Buildroot for Buffalo TS-XL/R5
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compile Buildroot & NAS Utilities
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Buildroot Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses5-dev unzip bc wget cpio rsync ncftp cvs subversion git python3 file patch libssl-dev
+
+      - name: Download and Extract Buildroot
+        run: |
+          wget https://buildroot.org/downloads/buildroot-2025.08.1.tar.xz
+          tar xf buildroot-2025.08.1.tar.xz
+
+      - name: Apply Marvell v5 NAS Configuration
+        run: |
+          cp configs/marvellv5_defconfig buildroot-2025.08.1/.config
+
+      - name: Append Custom NAS Packages & Network/Storage Tools
+        run: |
+          cd buildroot-2025.08.1
+          
+          # 1. Réseau, IPv4/IPv6, DHCP & Diag
+          echo "BR2_PACKAGE_IPUTILS=y" >> .config
+          echo "BR2_PACKAGE_IPUTILS_PING=y" >> .config
+          echo "BR2_PACKAGE_NETCAT=y" >> .config
+          echo "BR2_PACKAGE_TCPDUMP=y" >> .config
+          echo "BR2_PACKAGE_ETHTOOL=y" >> .config
+          echo "BR2_PACKAGE_IPERF3=y" >> .config
+
+          # 2. Systèmes de fichiers & Stockage (XFS, Btrfs, NTFS, MDADM, LVM)
+          echo "BR2_PACKAGE_XFS_PROGS=y" >> .config
+          echo "BR2_PACKAGE_BTRFS_PROGS=y" >> .config
+          echo "BR2_PACKAGE_E2FSPROGS=y" >> .config
+          echo "BR2_PACKAGE_NTFS_3G=y" >> .config
+          echo "BR2_PACKAGE_MDADM=y" >> .config
+          echo "BR2_PACKAGE_LVM2=y" >> .config
+
+          # 3. Partages Serveurs (NFS, Samba, FTP)
+          echo "BR2_PACKAGE_NFS_UTILS=y" >> .config
+          echo "BR2_PACKAGE_SAMBA=y" >> .config
+          echo "BR2_PACKAGE_VSFTPD=y" >> .config
+
+          # 4. Sécurité, CLI, Python & Automatisation
+          echo "BR2_PACKAGE_DROPBEAR=y" >> .config
+          echo "BR2_PACKAGE_LFTP=y" >> .config
+          echo "BR2_PACKAGE_CURL=y" >> .config
+          echo "BR2_PACKAGE_WGET=y" >> .config
+          echo "BR2_PACKAGE_RSYNC=y" >> .config
+          echo "BR2_PACKAGE_PROCPS_NG=y" >> .config
+          echo "BR2_PACKAGE_COREUTILS=y" >> .config
+          echo "BR2_PACKAGE_NANO=y" >> .config
+          echo "BR2_PACKAGE_PYTHON3=y" >> .config
+          echo "BR2_PACKAGE_BASH=y" >> .config
+          echo "BR2_PACKAGE_CRONIE=y" >> .config
+
+          # 5. Maintenance Matérielle (Disques & Périphériques)
+          echo "BR2_PACKAGE_HDPARM=y" >> .config
+          echo "BR2_PACKAGE_SMARTMONTOOLS=y" >> .config
+          echo "BR2_PACKAGE_PCIUTILS=y" >> .config
+          echo "BR2_PACKAGE_USBUTILS=y" >> .config
+
+          # Résoudre les dépendances cachées
+          make olddefconfig
+
+      - name: Compile Toolchain and Base Rootfs
+        run: |
+          cd buildroot-2025.08.1
+          # Première compilation pour générer l'environnement de cross-compilation
+          make -j$(nproc)
+
+      - name: Clone and Cross-Compile micro-evtd (LCD, LEDs, Power)
+        run: |
+          # Récupération du daemon officiel pour le panneau de contrôle Buffalo
+          git clone https://github.com/1000001101000/micro-evtd.git
+          cd micro-evtd
+          
+          # Injection de la chaîne de compilation croisée de Buildroot dans le PATH
+          export PATH="$PWD/../buildroot-2025.08.1/output/host/bin:$PATH"
+          
+          # Détection dynamique du compilateur ARM généré
+          CROSS_COMPILE=$(ls ../buildroot-2025.08.1/output/host/bin/arm-*-gcc | head -n 1 | sed 's/-gcc//')
+          
+          # Compilation du programme pour le NAS
+          make CC="${CROSS_COMPILE}-gcc"
+          
+          # Installation du binaire dans l'arborescence du système cibles de Buildroot
+          mkdir -p ../buildroot-2025.08.1/output/target/usr/sbin/
+          cp micro-evtd ../buildroot-2025.08.1/output/target/usr/sbin/
+
+      - name: Rebuild Final Image with micro-evtd
+        run: |
+          cd buildroot-2025.08.1
+          # Régénération de l'image finale intégrant le nouveau binaire
+          make -j$(nproc)
+
+      - name: Upload NAS Firmware Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: buffalo-tsxl-custom-firmware
+          path: |
+            buildroot-2025.08.1/output/images/*
