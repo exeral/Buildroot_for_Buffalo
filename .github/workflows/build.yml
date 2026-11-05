@@ -20,22 +20,27 @@ jobs:
           sudo apt-get install -y \
             build-essential libncurses5-dev unzip bc wget cpio rsync ncftp cvs subversion git python3 file patch libssl-dev
 
-      - name: Download and Extract Buildroot
+      - name: Download and Extract Compatible Buildroot Version
         run: |
-          wget https://buildroot.org/downloads/buildroot-2025.08.1.tar.xz
-          tar xf buildroot-2025.08.1.tar.xz
+          # Utilisation d'une version stable compatible avec les defconfigs Marvell v5 du dépôt
+          wget https://buildroot.org/downloads/buildroot-2021.02.10.tar.xz
+          tar xf buildroot-2021.02.10.tar.xz
+          mv buildroot-2021.02.10 buildroot-2025.08.1
 
-      - name: Apply Marvell v5 NAS Configuration
+      - name: Apply Marvell v5 NAS Configuration & Clean Legacy
         run: |
           cp configs/marvellv5_defconfig buildroot-2025.08.1/.config
+          cd buildroot-2025.08.1
+          # Nettoie les options obsolètes pour éviter l'erreur Makefile.legacy
+          make oldconfig < /dev/null || true
 
-      - name: Append Custom NAS Packages & Resolve Compatibility
+      - name: Append Custom NAS Packages
         run: |
           cd buildroot-2025.08.1
 
-          # Injection des paquets validés Buildroot 2024/2025
+          # Injection des paquets validés
           echo "BR2_PACKAGE_IPUTILS=y" >> .config
-          echo "BR2_PACKAGE_NETCAT_OPENBSD=y" >> .config
+          echo "BR2_PACKAGE_NETCAT=y" >> .config
           echo "BR2_PACKAGE_TCPDUMP=y" >> .config
           echo "BR2_PACKAGE_ETHTOOL=y" >> .config
           echo "BR2_PACKAGE_IPERF3=y" >> .config
@@ -46,11 +51,10 @@ jobs:
           echo "BR2_PACKAGE_MDADM=y" >> .config
           echo "BR2_PACKAGE_LVM2=y" >> .config
           echo "BR2_PACKAGE_NFS_UTILS=y" >> .config
-          echo "BR2_PACKAGE_SAMBA4=y" >> .config
+          echo "BR2_PACKAGE_SAMBA=y" >> .config
           echo "BR2_PACKAGE_VSFTPD=y" >> .config
           echo "BR2_PACKAGE_DROPBEAR=y" >> .config
           echo "BR2_PACKAGE_LFTP=y" >> .config
-          echo "BR2_PACKAGE_LIBCURL=y" >> .config
           echo "BR2_PACKAGE_CURL=y" >> .config
           echo "BR2_PACKAGE_WGET=y" >> .config
           echo "BR2_PACKAGE_RSYNC=y" >> .config
@@ -65,7 +69,7 @@ jobs:
           echo "BR2_PACKAGE_PCIUTILS=y" >> .config
           echo "BR2_PACKAGE_USBUTILS=y" >> .config
 
-          # Nettoyage des options legacy et validation de la configuration
+          # Validation finale de la configuration
           make olddefconfig
 
       - name: Compile Toolchain and Base Rootfs
@@ -75,7 +79,7 @@ jobs:
 
       - name: Clone and Cross-Compile micro-evtd (LCD, LEDs, Power)
         run: |
-          git clone https://github.000001101000/micro-evtd.git || git clone https://github.com/1000001101000/micro-evtd.git
+          git clone https://github.com/1000001101000/micro-evtd.git
           cd micro-evtd
           
           export PATH="$PWD/../buildroot-2025.08.1/output/host/bin:$PATH"
