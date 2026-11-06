@@ -25,9 +25,9 @@ jobs:
       - name: Host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git wget cpio unzip rsync bc file patch gawk \
-            libncurses-dev libssl-dev python3 gdisk u-boot-tools device-tree-compiler mtools \
-            uuid-runtime e2fsprogs kmod xz-utils libelf-dev flex bison
+          sudo apt-get install -y build-essential gcc-multilib g++-multilib git wget cpio unzip rsync bc \
+            file patch gawk perl bzip2 lzip zstd libncurses-dev libssl-dev python3 gdisk u-boot-tools \
+            device-tree-compiler mtools uuid-runtime e2fsprogs kmod xz-utils libelf-dev flex bison
 
       - name: Buildroot 2025.08.1
         working-directory: src
