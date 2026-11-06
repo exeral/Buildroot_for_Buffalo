@@ -1,103 +1,172 @@
-name: Build Buildroot for Buffalo TS-XL/R5
-
+name: build-ts-xl
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Compile Buildroot & NAS Utilities
-    runs-on: ubuntu-22.04
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 
-      - name: Install Buildroot Dependencies
+      - uses: actions/checkout@v4
+        with:
+          repository: 1000001101000/Buildroot_for_Buffalo
+          ref: 9ce7481640dfc0b54b20c504d389562fd79b2385
+          path: src
+
+      - name: Host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential libncurses5-dev unzip bc wget cpio rsync ncftp cvs subversion git python3 file patch libssl-dev
+          sudo apt-get install -y build-essential git wget cpio unzip rsync bc file patch gawk \
+            libncurses-dev libssl-dev python3 gdisk u-boot-tools device-tree-compiler mtools \
+            uuid-runtime e2fsprogs kmod xz-utils libelf-dev flex bison
 
-      - name: Download and Extract Compatible Buildroot Version
+      - name: Buildroot 2025.08.1
+        working-directory: src
         run: |
-          # Utilisation d'une version stable compatible avec les defconfigs Marvell v5 du dépôt
-          wget https://buildroot.org/downloads/buildroot-2021.02.10.tar.xz
-          tar xf buildroot-2021.02.10.tar.xz
-          mv buildroot-2021.02.10 buildroot-2025.08.1
+          wget -q https://buildroot.org/downloads/buildroot-2025.08.1.tar.xz
+          tar xf buildroot-2025.08.1.tar.xz
 
-      - name: Apply Marvell v5 NAS Configuration & Clean Legacy
+      - name: Files expected by repo scripts
+        env:
+          SSH_PUBKEY: ${{ secrets.SSH_PUBKEY }}
         run: |
-          cp configs/marvellv5_defconfig buildroot-2025.08.1/.config
-          cd buildroot-2025.08.1
-          # Nettoie les options obsolètes pour éviter l'erreur Makefile.legacy
-          make oldconfig < /dev/null || true
+          test -n "$SSH_PUBKEY" || { echo "secret SSH_PUBKEY manquant"; exit 1; }
+          mkdir -p ~/.ssh ~/buildroot_keep
+          echo "$SSH_PUBKEY" > ~/.ssh/id_rsa.pub
+          cd ~/buildroot_keep
+          for f in .msmtprc zed-config exports mdadm.conf rsyncd.conf rsyncd.secrets aliases; do : > "$f"; done
+          echo "# m h dom mon dow command" > root
 
-      - name: Append Custom NAS Packages
+      - name: Generate config
+        working-directory: src/buildroot-2025.08.1
         run: |
-          cd buildroot-2025.08.1
+          cat > ../kernel/marvellv5/extra_configs <<'EOF'
+          CONFIG_EXT4_FS=y
+          CONFIG_XFS_FS=m
+          CONFIG_BTRFS_FS=m
+          CONFIG_FUSE_FS=m
+          CONFIG_NTFS3_FS=m
+          CONFIG_BLK_DEV_DM=m
+          CONFIG_DM_SNAPSHOT=m
+          CONFIG_DM_MIRROR=m
+          CONFIG_DM_THIN_PROVISIONING=m
+          CONFIG_PACKET=m
+          CONFIG_IPV6=y
+          CONFIG_NFSD=m
+          CONFIG_NFSD_V3_ACL=y
+          CONFIG_NFSD_V4=y
+          EOF
+          printf 'CONFIG_VI=y\n' > ../custom/busybox_extra.fragment
 
-          # Injection des paquets validés
-          echo "BR2_PACKAGE_IPUTILS=y" >> .config
-          echo "BR2_PACKAGE_NETCAT=y" >> .config
-          echo "BR2_PACKAGE_TCPDUMP=y" >> .config
-          echo "BR2_PACKAGE_ETHTOOL=y" >> .config
-          echo "BR2_PACKAGE_IPERF3=y" >> .config
-          echo "BR2_PACKAGE_XFS_PROGS=y" >> .config
-          echo "BR2_PACKAGE_BTRFS_PROGS=y" >> .config
-          echo "BR2_PACKAGE_E2FSPROGS=y" >> .config
-          echo "BR2_PACKAGE_NTFS_3G=y" >> .config
-          echo "BR2_PACKAGE_MDADM=y" >> .config
-          echo "BR2_PACKAGE_LVM2=y" >> .config
-          echo "BR2_PACKAGE_NFS_UTILS=y" >> .config
-          echo "BR2_PACKAGE_SAMBA=y" >> .config
-          echo "BR2_PACKAGE_VSFTPD=y" >> .config
-          echo "BR2_PACKAGE_DROPBEAR=y" >> .config
-          echo "BR2_PACKAGE_LFTP=y" >> .config
-          echo "BR2_PACKAGE_CURL=y" >> .config
-          echo "BR2_PACKAGE_WGET=y" >> .config
-          echo "BR2_PACKAGE_RSYNC=y" >> .config
-          echo "BR2_PACKAGE_PROCPS_NG=y" >> .config
-          echo "BR2_PACKAGE_COREUTILS=y" >> .config
-          echo "BR2_PACKAGE_NANO=y" >> .config
-          echo "BR2_PACKAGE_PYTHON3=y" >> .config
-          echo "BR2_PACKAGE_BASH=y" >> .config
-          echo "BR2_PACKAGE_CRONIE=y" >> .config
-          echo "BR2_PACKAGE_HDPARM=y" >> .config
-          echo "BR2_PACKAGE_SMARTMONTOOLS=y" >> .config
-          echo "BR2_PACKAGE_PCIUTILS=y" >> .config
-          echo "BR2_PACKAGE_USBUTILS=y" >> .config
+          cat > br2.frag <<'EOF'
+          BR2_LINUX_KERNEL_INTREE_DTS_NAME="mv78100-terastation-tsxl"
+          BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="../kernel/debug_configs ../kernel/docker_configs ../kernel/general_hardware_configs ../kernel/iscsi_configs ../kernel/mdadm_configs ../kernel/r8152_configs ../kernel/marvellv5/custom_configs ../kernel/marvellv5/extra_configs"
+          BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="../custom/busybox_extra.fragment"
+          BR2_TARGET_ROOTFS_EXT2_SIZE="768M"
+          BR2_INET_IPV6=y
+          BR2_PACKAGE_IPUTILS=y
+          BR2_PACKAGE_IPUTILS_PING=y
+          BR2_PACKAGE_NETCAT=y
+          BR2_PACKAGE_TCPDUMP=y
+          BR2_PACKAGE_ETHTOOL=y
+          BR2_PACKAGE_BIND=y
+          BR2_PACKAGE_BIND_TOOLS=y
+          BR2_PACKAGE_IPERF3=y
+          BR2_PACKAGE_XFSPROGS=y
+          BR2_PACKAGE_BTRFS_PROGS=y
+          BR2_PACKAGE_MDADM=y
+          BR2_PACKAGE_LVM2=y
+          BR2_PACKAGE_LVM2_STANDARD_INSTALL=y
+          BR2_PACKAGE_E2FSPROGS=y
+          BR2_PACKAGE_NTFS_3G=y
+          BR2_PACKAGE_NTFS_3G_NTFSPROGS=y
+          BR2_PACKAGE_NFS_UTILS=y
+          BR2_PACKAGE_NFS_UTILS_NFSV4=y
+          BR2_PACKAGE_NFS_UTILS_RPC_NFSD=y
+          BR2_PACKAGE_RPCBIND=y
+          BR2_PACKAGE_SAMBA4=y
+          BR2_PACKAGE_VSFTPD=y
+          BR2_PACKAGE_DROPBEAR=y
+          BR2_PACKAGE_DROPBEAR_CLIENT=y
+          BR2_PACKAGE_LFTP=y
+          BR2_PACKAGE_LFTP_PROTO_FTP=y
+          BR2_PACKAGE_LFTP_PROTO_HTTP=y
+          BR2_PACKAGE_LFTP_PROTO_SFTP=y
+          BR2_PACKAGE_OPENSSL=y
+          BR2_PACKAGE_LIBCURL=y
+          BR2_PACKAGE_LIBCURL_CURL=y
+          BR2_PACKAGE_LIBCURL_OPENSSL=y
+          BR2_PACKAGE_WGET=y
+          BR2_PACKAGE_RSYNC=y
+          BR2_PACKAGE_NET_TOOLS=y
+          BR2_PACKAGE_PROCPS_NG=y
+          BR2_PACKAGE_NANO=y
+          BR2_PACKAGE_BASH=y
+          BR2_PACKAGE_PYTHON3=y
+          BR2_PACKAGE_PYTHON_SERIAL=y
+          BR2_PACKAGE_DCRON=y
+          BR2_PACKAGE_HDPARM=y
+          BR2_PACKAGE_SMARTMONTOOLS=y
+          BR2_PACKAGE_PCIUTILS=y
+          BR2_PACKAGE_USBUTILS=y
+          EOF
+          printf 'BR2_PACKAGE_ZFS\nBR2_PACKAGE_OPENSSH\n' > br2.unset
 
-          # Validation finale de la configuration
+          cp ../configs/marvellv5_defconfig .config
+          for s in $(sed -E 's/=.*//' br2.frag) $(cat br2.unset); do
+            sed -i -E "/^(# )?${s}(=| is not set)/d" .config
+          done
+          cat br2.frag >> .config
           make olddefconfig
 
-      - name: Compile Toolchain and Base Rootfs
-        run: |
-          cd buildroot-2025.08.1
-          make -j$(nproc)
+          miss=0
+          while IFS= read -r l; do
+            grep -qxF "$l" .config || { echo "ABSENT: $l"; miss=1; }
+          done < br2.frag
+          exit $miss
 
-      - name: Clone and Cross-Compile micro-evtd (LCD, LEDs, Power)
+      - name: Build (1st make stops by design, see common_prebuild.sh)
+        working-directory: src/buildroot-2025.08.1
         run: |
-          git clone https://github.com/1000001101000/micro-evtd.git
-          cd micro-evtd
-          
-          export PATH="$PWD/../buildroot-2025.08.1/output/host/bin:$PATH"
-          CROSS_COMPILE=$(ls ../buildroot-2025.08.1/output/host/bin/arm-*-gcc | head -n 1 | sed 's/-gcc//')
-          
-          make CC="${CROSS_COMPILE}-gcc"
-          
-          mkdir -p ../buildroot-2025.08.1/output/target/usr/sbin/
-          cp micro-evtd ../buildroot-2025.08.1/output/target/usr/sbin/
+          make -j"$(nproc)" || true
+          make -j"$(nproc)"
 
-      - name: Rebuild Final Image with micro-evtd
+      - name: Verify kernel, binaries, services
+        working-directory: src/buildroot-2025.08.1
         run: |
-          cd buildroot-2025.08.1
-          make -j$(nproc)
+          k=$(ls -d output/build/linux-6*/.config)
+          for o in EXT4_FS XFS_FS BTRFS_FS FUSE_FS NTFS3_FS BLK_DEV_DM NFSD IPV6 PACKET LEDS_GPIO KEYBOARD_GPIO; do
+            grep -E "^CONFIG_$o=[ym]" "$k" || echo "KERNEL ABSENT: $o"
+          done
+          for b in ping nc tcpdump ethtool nslookup iperf3 mdadm lvm xfs_repair btrfs mkfs.ext4 ntfs-3g exportfs rpcbind smbd vsftpd dropbear lftp curl wget scp rsync netstat top nano vi python3 bash crond hdparm smartctl lspci lsusb micro-evtd; do
+            find output/target -name "$b" \( -type f -o -type l \) | grep -q . || echo "BINAIRE ABSENT: $b"
+          done
+          ls output/target/usr/lib/systemd/system | grep -Ei 'smb|vsftpd|dropbear|nfs|rpcbind|dcron|rsync' || true
 
-      - name: Upload NAS Firmware Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Check boot constraints
+        working-directory: src/buildroot-2025.08.1/output/images
+        run: |
+          ls -l uImage.buffalo initrd.buffalo boot.img disk.img
+          k=$(stat -c %s uImage.buffalo); i=$(stat -c %s initrd.buffalo)
+          [ "$k" -lt 6291456 ] || { echo "uImage > 6 MiB"; exit 1; }
+          [ "$k" -lt 4718592 ] || echo "WARN: uImage > 4.5 MiB (connu OK: 4.1 MB)"
+          [ "$i" -lt 15728640 ] || { echo "initrd > 15 MiB"; exit 1; }
+          dumpe2fs -h boot.img 2>/dev/null | grep -E 'Inode size|features'
+          debugfs -R "ls -l /" boot.img | grep -E 'uImage.buffalo|initrd.buffalo'
+          sgdisk -p disk.img
+
+      - name: Pack
+        working-directory: src/buildroot-2025.08.1/output/images
+        run: xz -T0 -k disk.img
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: buffalo-tsxl-custom-firmware
+          name: ts-xl-images
           path: |
-            buildroot-2025.08.1/output/images/*
+            src/buildroot-2025.08.1/output/images/disk.img.xz
+            src/buildroot-2025.08.1/output/images/uImage.buffalo
+            src/buildroot-2025.08.1/output/images/initrd.buffalo
+            src/buildroot-2025.08.1/output/images/*.dtb
